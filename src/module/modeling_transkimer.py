@@ -57,7 +57,7 @@ from transformers.utils import logging
 from transformers.models.bert.configuration_bert import BertConfig
 
 from .modeling_skim_predictor import SkimPredictor
-from .modeling_utils import BaseModelOutputWithPastAndCrossAttentionsSkim, BaseModelOutputWithPoolingAndCrossAttentionsSkim, MaskedLMOutputSkim, QuestionAnsweringModelOutputSkim, SequenceClassifierOutputSkim, convert_softmax_mask_to_digit
+from .modeling_utils import BaseModelOutputWithPastAndCrossAttentionsSkim, BaseModelOutputWithPoolingAndCrossAttentionsSkim, MaskedLMOutputSkim, QuestionAnsweringModelOutputSkim, SequenceClassifierOutputSkim, convert_softmax_mask_to_digit, trunc_with_mask_batched
 
 
 logger = logging.get_logger(__name__)
@@ -566,6 +566,7 @@ class BertEncoder(nn.Module):
         next_decoder_cache = () if use_cache else None
 
         forward_hidden_states = hidden_states.clone()
+        forward_skim_mask = None
 
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
@@ -578,9 +579,18 @@ class BertEncoder(nn.Module):
             skim_mask = skim_mask_with_cls
             # multiple current layer skim mask with last layer skim mask
             # to gurantee skimmed tokens are never recovered
-            if all_skim_mask:
+            if all_skim_mask and hidden_states.shape[0] != 1:
                 skim_mask = skim_mask * all_skim_mask[-1]
             all_skim_mask += (skim_mask, )
+
+
+            if hidden_states.shape[0] == 1:
+                bool_skim_mask = skim_mask.to(dtype=torch.bool)
+                hidden_states = trunc_with_mask_batched(hidden_states, bool_skim_mask, 1)
+                attention_mask = trunc_with_mask_batched(attention_mask, bool_skim_mask, 3)
+                skim_mask = trunc_with_mask_batched(skim_mask, bool_skim_mask, 1)
+                if forward_skim_mask is None:
+                    forward_skim_mask = torch.ones_like(bool_skim_mask).to(dtype=torch.bool)
 
             layer_head_mask = head_mask[i] if head_mask is not None else None
             past_key_value = past_key_values[i] if past_key_values is not None else None
@@ -621,9 +631,11 @@ class BertEncoder(nn.Module):
                 )
 
             hidden_states = layer_outputs[0]
-            forward_hidden_states = forward_hidden_states * (1-skim_mask.view(*skim_mask.shape,1)) + hidden_states * skim_mask.view(*skim_mask.shape,1)
-            # binary_skim_mask = skim_mask.to(dtype=torch.bool)
-            # forward_hidden_states[binary_skim_mask] = hidden_states[binary_skim_mask]
+            if hidden_states.shape[0] == 1:
+                forward_skim_mask[forward_skim_mask.clone()] = bool_skim_mask
+                forward_hidden_states[forward_skim_mask] = hidden_states
+            else:
+                forward_hidden_states = forward_hidden_states * (1-skim_mask.view(*skim_mask.shape,1)) + hidden_states * skim_mask.view(*skim_mask.shape,1)
 
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
@@ -1328,8 +1340,6 @@ class BertForMaskedLM(BertPreTrainedModel):
         self.bert = BertModel(config, add_pooling_layer=False)
         self.cls = BertOnlyMLMHead(config)
 
-        self.skim_coefficient = config.skim_coefficient if hasattr(config, 'skim_coefficient') else 0.5
-
         self.init_weights()
 
     def get_output_embeddings(self):
@@ -1395,32 +1405,11 @@ class BertForMaskedLM(BertPreTrainedModel):
             output = (prediction_scores,) + outputs[2:]
             return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
 
-        skim_loss, neat_mac = 0.0, 0.0
-        layer_neat_mac = list()
-        all_tokens_length = torch.mean(torch.sum(attention_mask.to(torch.float32),dim=-1))
-        for mask in outputs.skim_mask:
-            accumulated_skim_mask = torch.mean(torch.sum(mask,dim=1))
-            skim_loss += accumulated_skim_mask/mask.shape[1]
-            layer_neat_mac.append(accumulated_skim_mask/all_tokens_length)
-            neat_mac += accumulated_skim_mask/all_tokens_length
-        skim_loss /= self.config.num_hidden_layers
-        neat_mac /= self.config.num_hidden_layers
-        classification_loss = masked_lm_loss
-        # print(skim_loss, neat_mac, loss)
-        # loss = skim_loss
-        loss = self.skim_coefficient * skim_loss + masked_lm_loss
-
-        return MaskedLMOutputSkim(
-            loss=loss,
+        return MaskedLMOutput(
+            loss=masked_lm_loss,
             logits=prediction_scores,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            attention_mask=outputs.attention_mask,
-            skim_mask=outputs.skim_mask,
-            skim_loss=skim_loss,
-            classification_loss=classification_loss,
-            tokens_remained=neat_mac,
-            layer_tokens_remained=layer_neat_mac,
         )
 
     def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
@@ -1644,8 +1633,7 @@ class BertForSequenceClassification(BertPreTrainedModel):
         classification_loss = loss
         # print(skim_loss, neat_mac, loss)
         # loss = skim_loss
-        if labels is not None:
-            loss = self.skim_coefficient * skim_loss + loss
+        loss = self.skim_coefficient * skim_loss + loss
 
         return SequenceClassifierOutputSkim(
             loss=loss,

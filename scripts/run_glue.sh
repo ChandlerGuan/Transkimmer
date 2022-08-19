@@ -1,5 +1,5 @@
 # choose from 'cola', 'mnli', 'mrpc', 'qnli', 'qqp', 'rte', 'sst2', 'stsb', 'wnli', 'imdb'
-TASK_NAME=imdb
+TASK_NAME=mrpc
 
 SEED=42
 SKIM_FACTOR=0.5
@@ -30,7 +30,7 @@ python -u src/run_glue_no_trainer.py \
   --max_length 512 \
   --per_device_train_batch_size 32 \
   --gradient_accumulation_steps 2 \
-  --per_device_eval_batch_size 32 \
+  --per_device_eval_batch_size 1 \
   --learning_rate 2e-5 \
   --seed ${SEED} \
   --num_train_epochs ${EPOCH_NUM} \

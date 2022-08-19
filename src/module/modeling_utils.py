@@ -63,3 +63,24 @@ def convert_softmax_mask_to_digit(skim_mask):
     # skim_mask [batch, from, to, seq_len]
     return (skim_mask == 0).to(dtype=torch.int64).unsqueeze(1).unsqueeze(1)
 
+def trunc_with_mask_batched(input, mask, dim):
+    """
+    trunc a batched input at dim
+        e.g. hidden_states ([batch, seq_len, hidden_size])
+            attention_mask ([batch, layer, head, seq_len])
+    mask: [batch, seq_len]
+    """
+    assert input.shape[dim]==mask.shape[1]
+
+    if dim != 1:
+        input = input.transpose(1, dim)
+
+    transpose_shape = list(input.shape)
+    transpose_shape[1] = -1
+
+    trunc_input = input[mask].view(transpose_shape)
+
+    if dim != 1:
+        trunc_input = trunc_input.transpose(1, dim)
+
+    return trunc_input
