@@ -57,7 +57,7 @@ from transformers.utils import logging
 from transformers.models.bert.configuration_bert import BertConfig
 
 from .modeling_skim_predictor import SkimPredictor
-from .modeling_utils import BaseModelOutputWithPastAndCrossAttentionsSkim, BaseModelOutputWithPoolingAndCrossAttentionsSkim, MaskedLMOutputSkim, QuestionAnsweringModelOutputSkim, SequenceClassifierOutputSkim, convert_softmax_mask_to_digit, trunc_with_mask_batched
+from .modeling_utils import BaseModelOutputWithPastAndCrossAttentionsSkim, BaseModelOutputWithPoolingAndCrossAttentionsSkim, MaskedLMOutputSkim, QuestionAnsweringModelOutputSkim, SequenceClassifierOutputSkim, convert_softmax_mask_to_digit, trunc_with_mask_batched, masked_softmax
 
 
 logger = logging.get_logger(__name__)
@@ -330,10 +330,11 @@ class BertSelfAttention(nn.Module):
             attention_scores = attention_scores + attention_mask
 
         # Normalize the attention scores to probabilities.
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        # attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        attention_probs = masked_softmax(attention_scores, skim_mask, dim=3)
 
         # mask attention probs during training for skimming
-        attention_probs = attention_probs * skim_mask[:, None, None, :]
+        # attention_probs = attention_probs * skim_mask[:, None, None, :]
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.

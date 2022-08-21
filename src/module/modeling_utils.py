@@ -58,6 +58,14 @@ class MaskedLMOutputSkim(MaskedLMOutput):
     tokens_remained: Optional[torch.FloatTensor] = None
     layer_tokens_remained: Optional[Tuple[torch.FloatTensor]] = None
 
+def masked_softmax(vec, mask, dim=1, eps=1e-6):
+    mask = mask[:,None,None,:]
+    masked_vec = vec * mask.float()
+    max_vec = torch.max(masked_vec, dim=dim, keepdim=True)[0]
+    exps = torch.exp(masked_vec-max_vec)
+    masked_exps = exps * mask.float() + eps
+    masked_sums = masked_exps.sum(dim, keepdim=True)
+    return masked_exps/masked_sums
 
 def convert_softmax_mask_to_digit(skim_mask):
     # skim_mask [batch, from, to, seq_len]
